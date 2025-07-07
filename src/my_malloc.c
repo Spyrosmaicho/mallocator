@@ -5,6 +5,8 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #include <stdio.h>
+#include <assert.h>
+#include <string.h>
 
 static pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -17,9 +19,12 @@ static pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
     #endif
 #endif
 
+#define FREED_MAGIC 0xDEADBEEFDEADBEEF
+#define ALLOC_MAGIC 0xBADC0DEDEAD1234
 
 typedef struct Block {
     size_t size;
+    size_t magic;
     bool free;
     bool is_mmap; // Flag to indicate if the block was allocated using mmap
     struct Block* next;
@@ -41,8 +46,13 @@ Block *find_best_fit(size_t size)
 {
     Block* best = NULL;
     Block* current = head;
-    while(current)
+    while(current) //Iterate through the linked list of blocks
     {
+        if(current->magic != ALLOC_MAGIC && current->magic != FREED_MAGIC) 
+        {
+            fprintf(stderr, "Corrupted block detected at %p\n", (void*)current);
+            return NULL;
+        }
         if(current->free && current->size >= size)
         {
             if(!best || current->size < best->size) //Find the smallest block that fits
@@ -57,9 +67,86 @@ Block *find_best_fit(size_t size)
     return best; //Return the best fit block
 }
 
-Footer* get_Footer(Block *block)
+Footer* get_Footer(Block *block) 
 {
-    return (Footer*)((char*)(block +1) + block->size);
+    if(!block) return NULL;
+
+
+    if(block->is_mmap && block->magic != ALLOC_MAGIC && block->magic != FREED_MAGIC) return NULL;
+
+    return (Footer*)((char*)block + sizeof(Block) + block->size);
+}
+
+
+void validate_heap() 
+{
+    Block *current = head;
+    size_t count = 0;
+    
+    while(current) 
+    {
+        
+        if(count++ > 1000) 
+        {
+            fprintf(stderr, "Possible infinite loop in block list\n");
+            assert(0);
+        }
+        
+        
+        if((void*)current < (void*)head || (void*)current > (void*)tail)
+        {
+            fprintf(stderr, "Block %p outside heap boundaries\n", (void*)current);
+            assert(0);
+        }
+        
+        if(current->is_mmap)
+        {
+            
+            if(current->magic != ALLOC_MAGIC && current->magic != FREED_MAGIC)
+            {
+                fprintf(stderr, "Invalid mmap block at %p\n", (void*)current);
+                assert(0);
+            }
+        }
+        else 
+        {
+           
+            if(current->magic != ALLOC_MAGIC && current->magic != FREED_MAGIC) 
+            {
+                fprintf(stderr, "Invalid magic in block %p: 0x%lx\n", 
+                      (void*)current, current->magic);
+                assert(0);
+            }
+        }
+        
+        
+        if(current->next)
+        {
+            
+            if((void*)current->next < (void*)head || (void*)current->next > (void*)tail)
+            {
+                fprintf(stderr, "Invalid next pointer in block %p\n", (void*)current);
+                assert(0);
+            }
+            
+           
+            if(current->next->prev != current) 
+            {
+                fprintf(stderr, "Invalid next->prev link in block %p\n", (void*)current);
+                assert(0);
+            }
+        }
+        
+        
+        Block *fast = current->next ? current->next->next : NULL;
+        if(fast == current) 
+        {
+            fprintf(stderr, "Circular reference detected at %p\n", (void*)current);
+            assert(0);
+        }
+        
+        current = current->next;
+    }
 }
 
 Block *request_space(size_t size)
@@ -73,22 +160,27 @@ Block *request_space(size_t size)
         if (request == MAP_FAILED) return NULL;
         
         block = (Block*)request;
+        memset(block,0,sizeof(Block));
+        block->magic = ALLOC_MAGIC;
         block->size = size;
         block->free = false;
         block->next = NULL;
         block->prev = tail;
-        
         block->is_mmap = true;
     }
     else
     {
         size_t page_size = getpagesize();
-        size_t request_size = ((size + page_size - 1) / page_size) * page_size;
+        size_t total_size = ALIGN(size);
+        size_t full_block = sizeof(Block) + total_size + sizeof(Footer);
+        size_t request_size = ((full_block + page_size - 1) / page_size) * page_size;
         
         request = sbrk(request_size);
         if (request == (void*)-1) return NULL;
         
         block = (Block*)request;
+        memset(block, 0, sizeof(Block));
+        block->magic = ALLOC_MAGIC;
         block->size = request_size - sizeof(Block) - sizeof(Footer);
         block->free = false;
         block->next = NULL;
@@ -100,41 +192,56 @@ Block *request_space(size_t size)
     foot->size = block->size;
     
     // Update global list
-    if (!head) head = block;
-    if (tail) tail->next = block;
+   if (!head) head = block;
+    
+   if (tail)
+    {
+        tail->next = block;
+        block->prev = tail;  // Make sure to set prev pointer
+    } 
+    else block->prev = NULL;  // First block has no previous
+
     tail = block;
     
     return block;
 }
 
-void split(Block *block,size_t size)
+void split(Block *block, size_t size)
 {
-    Block * new = (Block*)((char*)(block + 1) + size);
-    new->size = block->size - size - sizeof(Block) - sizeof(Footer);
-    new->free = true;
-    new->next = block->next;
-    new->prev = block;
+    size_t remaining_size = block->size - size;
+
+    if(remaining_size < MIN_BLOCK_SIZE) return;
+
+    Block *new_block = (Block*)((char*)block + sizeof(Block) + size);
+
+    new_block->magic = ALLOC_MAGIC;
+    new_block->size = block->size - size - sizeof(Block) - sizeof(Footer);
+    new_block->free = true;
+    new_block->next = block->next;
+    new_block->prev = block;
+    new_block->is_mmap = false;
 
     block->size = size;
-    block->next = new;
+    block->next = new_block;
 
-    Footer *new_Footer = get_Footer(new);
-    new_Footer->size = new->size;
+    Footer *new_footer = get_Footer(new_block);
+    new_footer->size = new_block->size;
 
-    Footer *block_Footer = get_Footer(block);
-    block_Footer->size = block->size;
+    Footer *block_footer = get_Footer(block);
+    block_footer->size = block->size;
 
-    if (new->next) new->next->prev = new;
-    else tail = new;    
+    if (new_block->next) new_block->next->prev = new_block;
+    else tail = new_block;
 }
+
 
 
 void* my_malloc(size_t size)
 {
     pthread_mutex_lock(&alloc_mutex);
-
+    validate_heap(); // Validate the heap before allocation
     Block *block;
-    if(size <= 0)
+    if(size <= 0 )
     {
         pthread_mutex_unlock(&alloc_mutex);
         return NULL; //Invalid size
@@ -154,37 +261,29 @@ void* my_malloc(size_t size)
     }
     else
     {
-        if(block->size >= total_size + MIN_BLOCK_SIZE) split(block, total_size);
+        if(block->size >= actual_size + MIN_BLOCK_SIZE) split(block, actual_size);
         block->free = false; //Mark the block as used
     }
-    
+    validate_heap();
     pthread_mutex_unlock(&alloc_mutex);
-    return (void*)(block + 1); //Return a posize_ter to the memory after the block header
+    return (void*)((char*)block + sizeof(Block)); //Return a pointer to the memory after the block header
 
 }
+
+//TODO: CALLOC AND REALLOC
+
 
 void coalesce_blocks(Block *block)
 {
    pthread_mutex_lock(&alloc_mutex);
-    if(!block) 
+   validate_heap(); // Validate the heap before coalescing
+    if(!block || !block->free) 
     {
         pthread_mutex_unlock(&alloc_mutex);     
-        return; //Invalid block
+        return; //Invalid block or already free
     }
 
-    if(block->next && block->next->free)
-    {
-        block->size += block->next->size + sizeof(Block) + sizeof(Footer);
-
-        Footer *foot = get_Footer(block);
-        foot->size = block->size;
-
-        block->next = block->next->next; //Remove the next block from the list
-        if(block->next) block->next->prev = block; //Update the previous posize_ter
-        else tail = block; //If the next block was the tail, update the tail posize_ter
-    }
-
-    if (block->prev && block->prev->free) 
+     if (block->prev && block->prev->free) 
     {
         block->prev->size += sizeof(Block) + block->size + sizeof(Footer);
         
@@ -192,24 +291,42 @@ void coalesce_blocks(Block *block)
         Footer* foot = get_Footer(block->prev);
         foot->size = block->prev->size;
         
-        //Update next posize_ter
+        //Update next pointer
         block->prev->next = block->next;
         
         if (block->next) block->next->prev = block->prev;
         else tail = block->prev;
+
+        block = block->prev; //Move to the merged block
     }
+
+    if(block->next && block->next->free)
+    {
+        block->size += block->next->size + sizeof(Block) + sizeof(Footer);
+
+        Block* old_next = block->next;
+       block->next = old_next->next;
+
+        if(block->next) block->next->prev = block; //Update the previous pointer
+        else tail = block; //If the next block was the tail, update the tail pointer
+    }
+    Footer *foot = get_Footer(block);
+        foot->size = block->size;
+
+   validate_heap();
     pthread_mutex_unlock(&alloc_mutex);
 }
 
 
 Block *get_block_ptr(void *ptr) 
 {
-  return (Block*)ptr - 1;
+  return (Block*)((char*)ptr - sizeof(Block));
 }
 
 void my_free(void* ptr)
 {
     pthread_mutex_lock(&alloc_mutex);
+    validate_heap(); // Validate the heap before freeing
     if(!ptr) 
     {
         pthread_mutex_unlock(&alloc_mutex);
@@ -217,30 +334,45 @@ void my_free(void* ptr)
     }
 
     Block *block_ptr = get_block_ptr(ptr);
+    if(!block_ptr || (block_ptr->magic != ALLOC_MAGIC && block_ptr->magic != FREED_MAGIC)) 
+    {
+        pthread_mutex_unlock(&alloc_mutex);
+        return;
+    }
+
     if(block_ptr->free) 
     {
         pthread_mutex_unlock(&alloc_mutex);
-        return; //Block already free
+        return;
     }
     
 
     if(block_ptr->is_mmap) 
     {
-        munmap(block_ptr, block_ptr->size + sizeof(Block) + sizeof(Footer));
+        block_ptr->magic = FREED_MAGIC;
+
+        // Remove the block from the linked list
         if (block_ptr->prev) block_ptr->prev->next = block_ptr->next;
+        else head = block_ptr->next;
+
         if (block_ptr->next) block_ptr->next->prev = block_ptr->prev;
-        if (head == block_ptr) head = block_ptr->next;
-        if (tail == block_ptr) tail = block_ptr->prev;
+        else tail = block_ptr->prev;
+
+        //Unmap the memory
+        munmap(block_ptr, block_ptr->size + sizeof(Block) + sizeof(Footer));
+    
+        pthread_mutex_unlock(&alloc_mutex);
+        return;
     }
-    else
-    {
-        block_ptr->free = true; //Mark the block as free
-        coalesce_blocks(block_ptr);
-    }
+   block_ptr->magic = FREED_MAGIC;
+    block_ptr->free = true;
+    coalesce_blocks(block_ptr);
+
+    validate_heap();
     pthread_mutex_unlock(&alloc_mutex);
 }
 
-// Function to prsize_t memory statistics
+// Function to print memory statistics
 void print_memory_stats() 
 {
     size_t total = 0, used = 0;
