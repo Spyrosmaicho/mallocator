@@ -93,7 +93,7 @@ void validate_heap()
         }
         
         
-        if((void*)current < (void*)head || (void*)current > (void*)tail)
+        if(!current->is_mmap && ((void*)current < (void*)head || (void*)current > sbrk(0)))
         {
             fprintf(stderr, "Block %p outside heap boundaries\n", (void*)current);
             assert(0);
@@ -123,7 +123,7 @@ void validate_heap()
         if(current->next)
         {
             
-            if((void*)current->next < (void*)head || (void*)current->next > (void*)tail)
+            if (current->next && !current->next->is_mmap && ((void*)current->next < (void*)head || (void*)current->next > sbrk(0)))
             {
                 fprintf(stderr, "Invalid next pointer in block %p\n", (void*)current);
                 assert(0);
@@ -171,8 +171,7 @@ Block *request_space(size_t size)
     else
     {
         size_t page_size = getpagesize();
-        size_t total_size = ALIGN(size);
-        size_t full_block = sizeof(Block) + total_size + sizeof(Footer);
+        size_t full_block = sizeof(Block) + size + sizeof(Footer);
         size_t request_size = ((full_block + page_size - 1) / page_size) * page_size;
         
         request = sbrk(request_size);
@@ -189,6 +188,14 @@ Block *request_space(size_t size)
     }
 
     Footer *foot = get_Footer(block);
+    if(!foot)
+    {
+        if(block->is_mmap)
+        {
+            munmap(block, block->size + sizeof(Block) + sizeof(Footer));
+        }
+        return NULL;
+    }
     foot->size = block->size;
     
     // Update global list
@@ -210,7 +217,7 @@ void split(Block *block, size_t size)
 {
     size_t remaining_size = block->size - size;
 
-    if(remaining_size < MIN_BLOCK_SIZE) return;
+    if(block->is_mmap || (remaining_size < MIN_BLOCK_SIZE)) return;
 
     Block *new_block = (Block*)((char*)block + sizeof(Block) + size);
 
@@ -225,9 +232,19 @@ void split(Block *block, size_t size)
     block->next = new_block;
 
     Footer *new_footer = get_Footer(new_block);
+    if(!new_footer)
+    {
+        fprintf(stderr, "Failed to get footer for new block at %p\n", (void*)new_block);
+        return;
+    }
     new_footer->size = new_block->size;
 
     Footer *block_footer = get_Footer(block);
+    if(!block_footer)
+    {
+        fprintf(stderr, "Failed to get footer for block at %p\n", (void*)block);
+        return;
+    }
     block_footer->size = block->size;
 
     if (new_block->next) new_block->next->prev = new_block;
@@ -247,12 +264,12 @@ void* my_malloc(size_t size)
         return NULL; //Invalid size
     }
     size_t  actual_size = ALIGN(size);
-    size_t  total_size = sizeof(Block) + actual_size + sizeof(Footer);
+    //size_t  total_size = sizeof(Block) + actual_size + sizeof(Footer);
 
-    block = find_best_fit(total_size);
+    block = find_best_fit(actual_size);
     if(!block)
     {
-        block = request_space(total_size);
+        block = request_space(actual_size);
         if(!block)  
         {
             pthread_mutex_unlock(&alloc_mutex);
@@ -275,11 +292,9 @@ void* my_malloc(size_t size)
 
 void coalesce_blocks(Block *block)
 {
-   pthread_mutex_lock(&alloc_mutex);
    validate_heap(); // Validate the heap before coalescing
     if(!block || !block->free) 
-    {
-        pthread_mutex_unlock(&alloc_mutex);     
+    {   
         return; //Invalid block or already free
     }
 
@@ -311,16 +326,23 @@ void coalesce_blocks(Block *block)
         else tail = block; //If the next block was the tail, update the tail pointer
     }
     Footer *foot = get_Footer(block);
-        foot->size = block->size;
+    if(!foot)
+    {
+        fprintf(stderr, "Failed to get footer for block at %p\n", (void*)block);
+        return;
+    }
+    foot->size = block->size;
 
    validate_heap();
-    pthread_mutex_unlock(&alloc_mutex);
 }
 
 
 Block *get_block_ptr(void *ptr) 
 {
-  return (Block*)((char*)ptr - sizeof(Block));
+  if(!ptr) return NULL;
+    Block* block = (Block*)((char*)ptr - sizeof(Block));
+    if(block->magic != ALLOC_MAGIC && block->magic != FREED_MAGIC) return NULL;
+    return block;
 }
 
 void my_free(void* ptr)

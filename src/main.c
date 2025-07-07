@@ -83,20 +83,19 @@ void test_array_allocation()
     }
 }
 
-//ΤΟDO: MAKE IT RANDOM BECAUSE IT IS NOT RANDOM
 void test_random_allocations() 
 {
     print_test_header("Random Allocation Stress Test");
 
     #define NUM_ALLOCS 100
-
+    #define MAX_SIZE (4 * 1024 * 1024) // 4 MB max size for allocations
+    srand(time(NULL)); 
     void *pointers[NUM_ALLOCS] = {0};
     size_t sizes[NUM_ALLOCS] = {0};
 
-    // Allocate random blocks and fill them
     for (int i = 0; i < NUM_ALLOCS; i++) 
     {
-        sizes[i] = 2* i + 1; 
+        sizes[i] = (size_t)(rand() % MAX_SIZE + 1);
         pointers[i] = my_malloc(sizes[i]);
         if (!pointers[i]) 
         {
@@ -109,25 +108,23 @@ void test_random_allocations()
     printf("Allocated %d random blocks: ", NUM_ALLOCS);
     print_test_result(1);
 
-    //Free randomly about half of the blocks
     for (int i = 0; i < NUM_ALLOCS / 2; i++) 
     {
         int idx;
         do {
             idx = rand() % NUM_ALLOCS;
-        } while (pointers[idx] == NULL); // Ensure we only free allocated blocks
+        } while (pointers[idx] == NULL);
         my_free(pointers[idx]);
         pointers[idx] = NULL;
     }
     printf("Freed half of blocks randomly: ");
     print_test_result(1);
 
-    //Re-allocate in freed positions about 1/4 of total
     for (int i = 0, allocated = 0; allocated < NUM_ALLOCS / 4 && i < NUM_ALLOCS; i++) 
     {
         if (pointers[i] == NULL) 
         {
-            sizes[i] = 2* i +1;
+            sizes[i] = (size_t)(rand() % MAX_SIZE + 1);
             pointers[i] = my_malloc(sizes[i]);
             if (!pointers[i]) 
             {
@@ -141,7 +138,6 @@ void test_random_allocations()
     printf("Re-allocated some blocks: ");
     print_test_result(1);
 
-    // Free all remaining allocated blocks
     for (int i = 0; i < NUM_ALLOCS; i++) 
     {
         if (pointers[i]) 
@@ -153,8 +149,11 @@ void test_random_allocations()
     printf("Freed all remaining blocks: ");
     print_test_result(1);
 
+    putchar('\n');
     print_memory_stats();
+    
 }
+
 
 
 void test_edge_cases() 
@@ -202,6 +201,7 @@ void test_coalescing()
     }
     
     printf("Memory stats after allocations:\n");
+    putchar('\n');
     print_memory_stats();
     
     putchar('\n');
