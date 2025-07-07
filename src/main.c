@@ -19,7 +19,7 @@ int main(void)
         return 1;   
     }
 
-    void *ptr3 = my_malloc(4097);
+    void *ptr3 = my_malloc(4097); // This should trigger mmap allocation
     if(!ptr3)
     {
         my_free(ptr1);
