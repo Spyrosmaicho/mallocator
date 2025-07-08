@@ -1,12 +1,13 @@
 #include <stdbool.h>
 #include <stdlib.h>
-#include "my_malloc.h"
+#include "my_allocator.h"
 #include <pthread.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <assert.h>
 #include <string.h>
+#include <stdint.h>
 
 static pthread_mutex_t alloc_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -258,9 +259,10 @@ void* my_malloc(size_t size)
     pthread_mutex_lock(&alloc_mutex);
     validate_heap(); // Validate the heap before allocation
     Block *block;
-    if(size <= 0 )
+    if(size <= 0 || size > SIZE_MAX - sizeof(Block) - sizeof(Footer)) 
     {
         pthread_mutex_unlock(&alloc_mutex);
+        fprintf(stderr,"Overflow or underflow in my_malloc with size %zu\n", size);
         return NULL; //Invalid size
     }
     size_t  actual_size = ALIGN(size);
@@ -287,53 +289,63 @@ void* my_malloc(size_t size)
 
 }
 
-//TODO: CALLOC AND REALLOC
+//TODO: REALLOC
+void *my_calloc(size_t nmemb, size_t size)
+{
+    if (nmemb == 0 || size == 0) return NULL;
+
+    if (size > SIZE_MAX / nmemb) return NULL;
+
+    size_t total_size = nmemb * size;
+
+    if (total_size > SIZE_MAX - sizeof(Block) - sizeof(Footer)) return NULL;
+
+    void *ptr = my_malloc(total_size);
+    if (!ptr) return NULL;
+
+    memset(ptr, 0, total_size);
+    return ptr;
+}
+
+
+
 
 
 void coalesce_blocks(Block *block)
 {
-   validate_heap(); // Validate the heap before coalescing
-    if(!block || !block->free) 
-    {   
-        return; //Invalid block or already free
-    }
+    validate_heap();
+    if(!block || !block->free) return;
 
-     if (block->prev && block->prev->free) 
-    {
-        block->prev->size += sizeof(Block) + block->size + sizeof(Footer);
+    if (!block || block->magic != FREED_MAGIC) return;
+
+    
+    if (block->prev && block->prev->free && 
+        (char*)block->prev + sizeof(Block) + block->prev->size == (char*)block) {
         
-        //Update Footer
-        Footer* foot = get_Footer(block->prev);
-        foot->size = block->prev->size;
+        block->prev->size += sizeof(Block) + block->size;
         
-        //Update next pointer
+        Footer *foot = get_Footer(block->prev);
+        if (foot) foot->size = block->prev->size;
+        
         block->prev->next = block->next;
-        
         if (block->next) block->next->prev = block->prev;
-        else tail = block->prev;
-
-        block = block->prev; //Move to the merged block
+        block = block->prev;
     }
 
-    if(block->next && block->next->free)
-    {
-        block->size += block->next->size + sizeof(Block) + sizeof(Footer);
-
-        Block* old_next = block->next;
-       block->next = old_next->next;
-
-        if(block->next) block->next->prev = block; //Update the previous pointer
-        else tail = block; //If the next block was the tail, update the tail pointer
+    
+    if (block->next && block->next->free &&
+        (char*)block + sizeof(Block) + block->size == (char*)block->next) {
+        
+        block->size += sizeof(Block) + block->next->size;
+        
+        Footer *foot = get_Footer(block);
+        if (foot) foot->size = block->size;
+        
+        block->next = block->next->next;
+        if (block->next) block->next->prev = block;
     }
-    Footer *foot = get_Footer(block);
-    if(!foot)
-    {
-        fprintf(stderr, "Failed to get footer for block at %p\n", (void*)block);
-        return;
-    }
-    foot->size = block->size;
 
-   validate_heap();
+    validate_heap();
 }
 
 

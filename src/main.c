@@ -2,7 +2,8 @@
 #include <stdlib.h>
 #include <time.h>
 #include <string.h>
-#include "my_malloc.h"
+#include "my_allocator.h"
+#include <stdint.h>
 
 #define COLOR_GREEN "\033[0;32m"
 #define COLOR_RED "\033[0;31m"
@@ -225,14 +226,169 @@ void test_coalescing()
     print_test_result(1);
 }
 
+void test_calloc_overflow() {
+    print_test_header("calloc Overflow Test");
+    
+    void *p = my_calloc(SIZE_MAX, 4);
+    printf("Overflow allocation (SIZE_MAX*4): ");
+    print_test_result(p == NULL);
+    if(p) my_free(p);
+
+    size_t safe_nmemb = 512;
+    size_t safe_size = 1000; // Safe values to avoid overflow
+    void *p2 = my_calloc(safe_nmemb, safe_size);
+    printf("Safe allocation (%zu x %zu): ", safe_nmemb, safe_size);
+    print_test_result(p2 != NULL);
+    if(p2) my_free(p2);
+}
+
+void test_calloc_zero_initialization() {
+    print_test_header("calloc Zero-Initialization");
+    
+    #define TEST_SIZE 1024
+    int *arr = (int*)my_calloc(TEST_SIZE, sizeof(int));
+    if(!arr) 
+    {
+        print_test_result(0);
+        return;
+    }
+    
+    int is_zeroed = 1;
+    for(size_t i = 0; i < TEST_SIZE; i++) 
+    {
+        if(arr[i] != 0) 
+        {
+            is_zeroed = 0;
+            break;
+        }
+    }
+    
+    printf("Memory zeroed: ");
+    print_test_result(is_zeroed);
+    my_free(arr);
+}
+
+void test_calloc_zero_parameters() 
+{
+    print_test_header("calloc Zero Parameters");
+    
+    void *p1 = my_calloc(0, 100);
+    void *p2 = my_calloc(100, 0);
+    void *p3 = my_calloc(0, 0);
+    
+    printf("Zero nmemb: ");
+    print_test_result(p1 == NULL);
+    printf("Zero size: ");
+    print_test_result(p2 == NULL);
+    printf("Both zero: ");
+    print_test_result(p3 == NULL);
+}
+
+void test_calloc_coalescing() 
+{
+    print_test_header("calloc Coalescing Test");
+    
+    void *p1 = my_calloc(10, sizeof(int));
+    void *p2 = my_calloc(10, sizeof(int));
+    if(!p1 || !p2) 
+    {
+        print_test_result(0);
+        return;
+    }
+    
+    my_free(p1);
+    my_free(p2);
+    
+    void *p_large = my_calloc(20, sizeof(int));
+    printf("Coalesced allocation: ");
+    print_test_result(p_large != NULL);
+    
+    if(p_large) 
+    {
+        printf("Verify contents: ");
+        int *arr = (int*)p_large;
+        int valid = 1;
+        for(int i = 0; i < 20; i++) 
+        {
+            if(arr[i] != 0) 
+            {
+                valid = 0;
+                break;
+            }
+        }
+        print_test_result(valid);
+        my_free(p_large);
+    }
+}
+
+void test_calloc_random() 
+{
+    print_test_header("calloc Random Stress Test - Extreme Edition");
+    
+    srand(time(NULL));
+    int passed = 1;
+    int total_tests = 75;  // Increased from 50 to 100 for more stress
+    size_t max_failures = 5;  // Allow up to 5 failures before aborting
+    size_t failures = 0;
+    
+    printf("Running %d random allocations...\n", total_tests);
+    
+    for(int i = 0; i < total_tests; i++) 
+    {
+        // More extreme random sizes
+        size_t nmemb = (rand() % 1000 + 1) * (rand() % 10 + 1);
+        size_t size = (rand() % 1024 + 1) * (rand() % 8 + 1);
+        
+        int *p = (int*)my_calloc(nmemb, size);
+        if(!p) 
+        {
+            printf("FAILED (out of memory?)\n");
+            failures++;
+            passed = 0;
+            if(failures >= max_failures) 
+            {
+                printf("Too many failures (%zu), aborting test...\n", failures);
+                break;
+            }
+            continue;
+        }
+        
+        // Verify zero-initialization
+        int zero_check_passed = 1;
+        for(size_t j = 0; j < (nmemb * size)/sizeof(int); j++) 
+        {
+            if(p[j] != 0) 
+            {
+                zero_check_passed = 0;
+                break;
+            }
+        }
+        
+        if(!zero_check_passed) 
+        {
+            printf("FAILED (memory not zeroed)\n");
+            passed = 0;
+        }
+        
+        my_free(p);
+    }
+    
+    print_test_result(passed);
+    if(failures > 0) 
+    {
+        printf("Note: %zu allocations failed (possibly due to memory constraints)\n", failures);
+    }
+}
 
 //TODO: Create more tests
 
 
 
-int main() {
+int main() 
+{
     printf("%sStarting Memory Allocator Test Suite%s\n\n", COLOR_GREEN, COLOR_RESET);
     
+    //Malloc tests
     test_basic_allocation();
     test_large_mmap_allocation();
     test_array_allocation();
@@ -240,6 +396,13 @@ int main() {
     test_edge_cases();
     test_coalescing();
     
+    //Calloc tests
+    test_calloc_overflow();
+    test_calloc_zero_initialization();
+    test_calloc_zero_parameters();
+    test_calloc_coalescing();
+    test_calloc_random();
+
     printf("\n%sAll tests completed!%s\n", COLOR_GREEN, COLOR_RESET);
     
     return 0;

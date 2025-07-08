@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS =  -g3 -Wall -Wextra -Werror -pedantic
 PROGRAM = main
-OBJS = main.o my_malloc.o
+OBJS = main.o my_allocator.o
 
 $(PROGRAM): $(OBJS)
 	$(CC) $(CFLAGS) $(OBJS) -o $(PROGRAM)
