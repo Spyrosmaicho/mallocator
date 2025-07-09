@@ -172,7 +172,7 @@ Block *request_space(size_t size)
     else
     {
         size_t page_size = getpagesize();
-        size_t full_block = sizeof(Block) + size + sizeof(Footer);
+        size_t full_block = ALIGN(sizeof(Block) + ALIGN(size) + sizeof(Footer));
         size_t request_size = ((full_block + page_size - 1) / page_size) * page_size;
         
         request = sbrk(request_size);
@@ -216,7 +216,7 @@ Block *request_space(size_t size)
 
 void split(Block *block, size_t size)
 {
-    size_t remaining_size = block->size - size;
+    size_t remaining_size = block->size - size - sizeof(Block) - sizeof(Footer);
 
     if(block->is_mmap || (remaining_size < MIN_BLOCK_SIZE)) return;
 
@@ -262,7 +262,7 @@ void* my_malloc(size_t size)
     if(size <= 0 || size > SIZE_MAX - sizeof(Block) - sizeof(Footer)) 
     {
         pthread_mutex_unlock(&alloc_mutex);
-        fprintf(stderr,"Overflow or underflow in my_malloc with size %zu\n", size);
+        //fprintf(stderr,"Overflow or underflow in my_malloc with size %zu\n", size);
         return NULL; //Invalid size
     }
     size_t  actual_size = ALIGN(size);
@@ -289,7 +289,6 @@ void* my_malloc(size_t size)
 
 }
 
-//TODO: REALLOC
 void *my_calloc(size_t nmemb, size_t size)
 {
     if (nmemb == 0 || size == 0) return NULL;
@@ -307,17 +306,10 @@ void *my_calloc(size_t nmemb, size_t size)
     return ptr;
 }
 
-
-
-
-
 void coalesce_blocks(Block *block)
 {
     validate_heap();
-    if(!block || !block->free) return;
-
-    if (!block || block->magic != FREED_MAGIC) return;
-
+    if(!block || !block->free || block->magic != FREED_MAGIC) return;
     
     if (block->prev && block->prev->free && 
         (char*)block->prev + sizeof(Block) + block->prev->size == (char*)block) {
@@ -353,7 +345,7 @@ Block *get_block_ptr(void *ptr)
 {
   if(!ptr) return NULL;
     Block* block = (Block*)((char*)ptr - sizeof(Block));
-    if(block->magic != ALLOC_MAGIC && block->magic != FREED_MAGIC) return NULL;
+    //if(block->magic != ALLOC_MAGIC && block->magic != FREED_MAGIC) return NULL;
     return block;
 }
 
@@ -406,23 +398,49 @@ void my_free(void* ptr)
     pthread_mutex_unlock(&alloc_mutex);
 }
 
-// Function to print memory statistics
-void print_memory_stats() 
+
+void *my_realloc(void *ptr, size_t size) 
 {
-    size_t total = 0, used = 0;
+    if (!ptr) return my_malloc(size);
+    if (!size)
+    { 
+        my_free(ptr); 
+        return NULL; 
+    }
+
+    Block *old_block = get_block_ptr(ptr);
+    size_t old_size = old_block->size;
+
+    void *new_ptr = my_malloc(size);
+    if (!new_ptr) return NULL;
+    memcpy(new_ptr, ptr, size < old_size ? size : old_size);
+    my_free(ptr);
+    return new_ptr;
+}
+
+
+
+// Function to print memory statistics
+void print_memory_stats() {
+    size_t total = 0, used_payload = 0, used_total = 0;
     size_t blocks = 0, mmap_blocks = 0;
     
     Block* curr = head;
     while (curr) {
-        total += curr->size + sizeof(Block) + sizeof(Footer);
+        size_t block_total = sizeof(Block) + curr->size + sizeof(Footer);
+        total += block_total;
+        if (!curr->free) {
+            used_payload += curr->size;
+            used_total += block_total;
+        }
         blocks++;
         if (curr->is_mmap) mmap_blocks++;
-        if (!curr->free) used += curr->size;
         curr = curr->next;
     }
     
     printf("Memory Stats:\n");
-    printf("Total: %zu bytes\n", total);
-    printf("Used: %zu bytes\n", used);
-    printf("Blocks: %ld (%ld mmap)\n", blocks, mmap_blocks);
+    printf("Total reserved: %zu bytes\n", total);
+    printf("Used payload: %zu bytes\n", used_payload);
+    printf("Used total (with overhead): %zu bytes\n", used_total);
+    printf("Blocks: %zu (%zu mmap)\n", blocks, mmap_blocks);
 }

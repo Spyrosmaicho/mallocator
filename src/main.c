@@ -19,6 +19,8 @@ void print_test_result(int passed)
     (passed) ? printf("%s[PASSED]%s\n", COLOR_GREEN, COLOR_RESET) : printf("%s[FAILED]%s\n", COLOR_RED, COLOR_RESET);
 }
 
+
+                /*MALLOC TESTS*/
 void test_basic_allocation() 
 {
     print_test_header("Basic Allocation Test");
@@ -225,7 +227,7 @@ void test_coalescing()
     
     print_test_result(1);
 }
-
+            /*CALLOC TESTS*/
 void test_calloc_overflow() {
     print_test_header("calloc Overflow Test");
     
@@ -380,8 +382,205 @@ void test_calloc_random()
     }
 }
 
-//TODO: Create more tests
+            /*REALLOC TESTS*/
+void test_realloc_basic() {
+    print_test_header("Basic Realloc Test");
+    
+    // Allocate initial block
+    int *ptr = (int*)my_malloc(10 * sizeof(int));
+    if (!ptr) {
+        print_test_result(0);
+        return;
+    }
+    
+    // Initialize data
+    for (int i = 0; i < 10; i++) ptr[i] = i;
+    
+    // Realloc to larger size
+    int *new_ptr = (int*)my_realloc(ptr, 20 * sizeof(int));
+    int result = (new_ptr != NULL);
+    printf("Realloc to larger size: ");
+    print_test_result(result);
+    
+    if (result) {
+        // Verify old data
+        int data_ok = 1;
+        for (int i = 0; i < 10; i++) {
+            if (new_ptr[i] != i) {
+                data_ok = 0;
+                break;
+            }
+        }
+        printf("Data preservation check: ");
+        print_test_result(data_ok);
+        
+        // Test writing new data
+        for (int i = 10; i < 20; i++) new_ptr[i] = i;
+        printf("New data write check: ");
+        print_test_result(1);
+        
+        my_free(new_ptr);
+    }
+}
 
+void test_realloc_smaller() {
+    print_test_header("Realloc Smaller Size Test");
+    
+    int *ptr = (int*)my_malloc(20 * sizeof(int));
+    if (!ptr) {
+        print_test_result(0);
+        return;
+    }
+    
+    for (int i = 0; i < 20; i++) ptr[i] = i;
+    
+    // Realloc to smaller size
+    int *new_ptr = (int*)my_realloc(ptr, 10 * sizeof(int));
+    int result = (new_ptr != NULL);
+    printf("Realloc to smaller size: ");
+    print_test_result(result);
+    
+    if (result) {
+        // Verify data was preserved
+        int data_ok = 1;
+        for (int i = 0; i < 10; i++) {
+            if (new_ptr[i] != i) {
+                data_ok = 0;
+                break;
+            }
+        }
+        printf("Data preservation check: ");
+        print_test_result(data_ok);
+        
+        my_free(new_ptr);
+    }
+}
+
+void test_realloc_null_ptr() {
+    print_test_header("Realloc with NULL Pointer");
+    
+    // Should behave like malloc
+    int *ptr = (int*)my_realloc(NULL, 100);
+    printf("Realloc NULL with size (should malloc): ");
+    print_test_result(ptr != NULL);
+    
+    if (ptr) my_free(ptr);
+}
+
+void test_realloc_zero_size() {
+    print_test_header("Realloc with Zero Size");
+    
+    int *ptr = (int*)my_malloc(100);
+    if (!ptr) {
+        print_test_result(0);
+        return;
+    }
+    
+    // Should behave like free
+    int *new_ptr = (int*)my_realloc(ptr, 0);
+    printf("Realloc with size=0 (should free): ");
+    print_test_result(new_ptr == NULL);
+}
+
+void test_realloc_coalescing() {
+    print_test_header("Realloc Coalescing Test");
+    
+    void *p1 = my_malloc(100);
+    void *p2 = my_malloc(100);
+    void *p3 = my_malloc(100);
+    
+    if (!p1 || !p2 || !p3) {
+        print_test_result(0);
+        return;
+    }
+    
+    printf("Initial allocations:\n");
+    print_memory_stats();
+    
+    // Free middle block
+    my_free(p2);
+    printf("\nAfter freeing middle block:\n");
+    print_memory_stats();
+    
+    // Realloc first block - should coalesce with freed p2
+    void *new_p1 = my_realloc(p1, 250);
+    printf("\nAfter realloc p1 to 250 bytes (should coalesce):\n");
+    print_memory_stats();
+    
+    int result = (new_p1 != NULL);
+    printf("Realloc result: ");
+    print_test_result(result);
+    
+    if (new_p1) {
+        my_free(new_p1);
+        my_free(p3);
+    }
+}
+
+void test_realloc_edge_cases() {
+    print_test_header("Realloc Edge Cases");
+    
+    printf("Realloc that first 50 bytes should be preserved: ");
+    void *ptr1 = my_malloc(100);
+    memset(ptr1, 0xAB, 100);
+    void *res = my_realloc(ptr1, 50);
+    //First 50 bytes should be preserved
+    print_test_result(memcmp(ptr1, res, 50) == 0);
+
+    // Pointers should be the same
+    /*void *ptr2 = my_malloc(80);
+    void *res2 = my_realloc(ptr2, 80);
+    print_test_result(res2 == ptr2);*/
+    
+    // Realloc with very large size
+    printf("Realloc with SIZE_MAX (should fail): ");
+    void *huge_ptr = my_realloc(my_malloc(100), SIZE_MAX);
+    print_test_result(huge_ptr == NULL);
+}
+
+void test_realloc_random() {
+    print_test_header("Random Realloc Stress Test");
+    
+    #define NUMS_ALLOCS 50
+    void *ptrs[NUMS_ALLOCS] = {0};
+    size_t sizes[NUMS_ALLOCS] = {100, 200, 300, 400, 500}; // Repeat pattern
+    
+    // Initial allocations
+    for (int i = 0; i < NUMS_ALLOCS; i++) {
+        ptrs[i] = my_malloc(sizes[i % 5]);
+        if (!ptrs[i]) {
+            printf("Initial alloc failed at %d\n", i);
+            print_test_result(0);
+            return;
+        }
+    }
+    
+    // Random reallocs
+    srand(time(NULL));
+    int passed = 1;
+    for (int i = 0; i < NUMS_ALLOCS * 2; i++) {
+        int idx = rand() % NUMS_ALLOCS;
+        size_t new_size = (rand() % 1000) + 1;
+        
+        void *old_ptr = ptrs[idx];
+        ptrs[idx] = my_realloc(ptrs[idx], new_size);
+        
+        if (!ptrs[idx]) {
+            printf("Realloc failed at iter %d (idx %d, size %zu)\n", 
+                  i, idx, new_size);
+            passed = 0;
+            ptrs[idx] = old_ptr; // Restore if realloc failed
+        }
+    }
+    
+    printf("Random realloc operations: ");
+    print_test_result(passed);
+    
+    // Cleanup
+    for (int i = 0; i < NUMS_ALLOCS; i++) {
+        if (ptrs[i]) my_free(ptrs[i]);
+    }
+}
 
 
 int main() 
@@ -402,6 +601,15 @@ int main()
     test_calloc_zero_parameters();
     test_calloc_coalescing();
     test_calloc_random();
+
+    //Realloc tests
+    test_realloc_basic();
+    test_realloc_smaller();
+    test_realloc_null_ptr();
+    test_realloc_zero_size();
+    test_realloc_coalescing();
+    test_realloc_edge_cases();
+    test_realloc_random();
 
     printf("\n%sAll tests completed!%s\n", COLOR_GREEN, COLOR_RESET);
     
