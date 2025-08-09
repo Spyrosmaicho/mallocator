@@ -1,5 +1,5 @@
 CC = gcc
-CFLAGS =  -g3 -Wall -Wextra -Werror -pedantic
+CFLAGS =  -g3 -Wall -Wextra -Werror -pedantic -Iinclude
 PROGRAM = main
 OBJS = main.o my_allocator.o
 
